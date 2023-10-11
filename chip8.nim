@@ -1,5 +1,6 @@
 import raylib
 import std/bitops
+import std/random
 import std/streams
 import std/strformat
 import os
@@ -42,6 +43,7 @@ var
   paused: bool = false
   video: VideoArray
   index_register: int = 0
+  key_pressed: int = -1
   
 let
   pixelSize: int32 = 8
@@ -84,32 +86,110 @@ proc cycle() =
     echo fmt"{opcode:x}: Return from subroutine"
     pc = stack.pop()
   elif opcode shr 12 == 1: # Jump
-    var loc = opcode mod 0x1000
+    var loc = opcode and 0x0FFF
     echo fmt"{opcode:x}: Jump to {loc:X}"
     pc = loc
   elif opcode shr 12 == 2: # Call Subroutine
-    var loc = opcode mod 0x2000
+    var loc = opcode and 0x0FFF
     echo fmt"{opcode:x}: Call subroutine at {loc:X}"
     stack.add(pc)
-  elif opcode shr 12 == 3: # TODO: IMPLEMENT ME!!!!!
-    var xkk = opcode mod 0x3000
-    echo fmt"{opcode:x}: SE Vx"
+    pc = loc
+  elif opcode shr 12 == 3: # If Vx = kk, increment PC
+    var x = (opcode and 0x0F00) shr 8
+    var kk = opcode and 0x00FF
+    if registers[x] == kk:
+      pc += 2
+    echo fmt"{opcode:x}: 3xkk Skip next if Vx ==  kk"
+  elif opcode shr 12 == 4: # If V4xkk
+    var x = (opcode and 0x0F00) shr 8
+    var kk = opcode and 0x00FF
+    if registers[x] != kk:
+      pc += 2
+    echo fmt"{opcode:x}: 4xkk Skip next if Vx !=  kk"
+  elif opcode shr 12 == 5:
+    var x = (opcode and 0x0F00) shr 8
+    var y = (opcode and 0x00F0) shr 4
+    if registers[x] == registers[y]:
+      pc += 2
+    echo fmt"{opcode:x}: 5xy0 Skip next if Vx ==  Vy"
   elif opcode shr 12 == 6: # Set register to value
-    var xkk = opcode mod 0x1000
+    var xkk = opcode and 0x0FFF
     var x = xkk div 0x100
     var kk = xkk mod 0x100
     registers[x] = kk
     echo fmt"{opcode:x}: Set register V{x:x} to {kk:x}"
   elif opcode shr 12 == 7: # Add value to register
-    var xkk = opcode mod 0x1000
+    var xkk = opcode and 0x0FFF
     var x = xkk div 0x100
     var kk = xkk mod 0x100
     echo fmt"{opcode:x}: Add value {kk:x} to register V{x:x}"
     registers[x] += kk
+  elif opcode shr 12 == 8:
+    var lastbit = opcode and 0x000F
+    var x = (opcode and 0x0F00) shr 8
+    var y = (opcode and 0x00F0) shr 4
+    if lastbit == 0:
+      echo fmt"{opcode:x} Set V{x:x} = V{y:x}"
+      registers[x] = registers[y]
+    elif lastbit == 1:
+      echo fmt"{opcode:x} Set V{x:x} = V{x:x} or V{y:x}"
+      registers[x] = registers[x] or registers[y]
+    elif lastbit == 2:
+      echo fmt"{opcode:x} Set V{x:x} = V{x:x} and V{y:x}"
+      registers[x] = registers[x] and registers[y]
+    elif lastbit == 3:
+      echo fmt"{opcode:x} Set V{x:x} = V{x:x} xor V{y:x}"
+      registers[x] = registers[x] xor registers[y]
+    elif lastbit == 4:
+      echo fmt"{opcode:x} Add V{x:x} and V{y:x}, set VF as carry"
+      var sm = registers[x] + registers[y]
+      registers[x] = sm mod 255
+      registers[0xF] = sm div 255
+    elif lastbit == 5:
+      echo fmt"{opcode:x} Subtract V{x:x} - V{y:x}, set VF as borrow"
+      var diff: uint8 = uint8(registers[x]) - uint8(registers[y])
+      if registers[x] < registers[y]:
+        registers[0xF] = 1
+      else:
+        registers[0xF] = 0
+      registers[x] = int(diff)
+    elif lastbit == 6:
+      echo fmt"{opcode:x} Set V{x:x} = V{x:x} shr 1"
+      registers[0xF] = registers[x] and 0x1
+      registers[x] = registers[x] shr 1
+    elif lastbit == 7:
+      echo fmt"{opcode:x} Set V{x:x} = V{y:x} - V{x:x}, VF = NOT borrow"
+      var diff: uint8 = uint8(registers[y]) - uint8(registers[x])
+      if registers[y] > registers[x]:
+        registers[0xF] = 1
+      else:
+        registers[0xF] = 0
+      registers[x] = int(diff)
+    elif lastbit == 0xE:
+      echo fmt"{opcode:x} Set V{x:x} = V{x:x} shl 1"
+      registers[0xF] = (registers[x] and 0x80) shr 7
+      registers[x] = registers[x] shl 1
+  elif opcode shr 12 == 9:
+    var x = (opcode and 0x0F00) shr 8
+    var y = (opcode and 0x00F0) shr 4
+    echo fmt"{opcode:x} Skip next instruction if V{x:x} != V{x:x}"
+    if registers[x] != registers[y]:
+      pc += 2
   elif opcode shr 12 == 0x0A: # Set Index Register to value
     var val = opcode and 0x0FFF
     echo fmt"{opcode:x}: Set register I to {val:x} (points to the value {memory[val]:x})"
     index_register = val
+  elif opcode shr 12 == 0x0B: # JMP
+    var val = opcode and 0x0FFF
+    echo fmt"{opcode:x}: Jump to location {val:x} + V0 = {val + registers[0]:x}"
+    pc = registers[0] + val
+    index_register = val
+  elif opcode shr 12 == 0x0C: # Random byte
+    var x = opcode and 0x0F00
+    var byte = opcode and 0x00FF
+    var rando = rand(255)
+    echo fmt"{opcode:x}: Set V{x:x} = Random byte {rando:x} and kk = {byte:x}, giving {byte and rando:x}"
+    registers[x] = byte and rando
   elif opcode shr 12 == 0x0D: # Display sprite
     var
       x = (opcode div 0x100) mod 0x10
@@ -125,14 +205,10 @@ proc cycle() =
     while (row < (opcode and 0xF)):
       col = 0
       var sprite = memory[index_register + row]
-      #echo fmt"Row : {sprite:x}"
       while (col < spriteSize):
         var realX = (xpos + col) mod width
         var realY = (ypos + row) mod height
-        #echo fmt"Drawing sprite pixel at x={realX}, y={realY}"
-        #echo fmt"Sprite pixel: {sprite:x}, sprite and 0x80: {sprite and 0x80:x}"
         
-        #echo fmt"Old scr pix:  {video[realX + width*(realY)]}"
         if ((sprite and 0x80) > 0):
           var old = video[realX + width*realY]
           if old > 0:
@@ -140,10 +216,46 @@ proc cycle() =
             video[realX + width*(realY)] = 0
           else:
             video[realX + width*realY] = 1
-        #echo fmt"New scr pix:  {video[realX + width*(realY)]}"
         col += 1
         sprite = sprite shl 1
       row += 1
+  elif opcode shr 12 == 0x0E: # Display sprite
+    var
+      last2bits = (opcode and 0x00FF)
+      x = (opcode and 0x0F00) shr 8
+    if last2bits == 0x9E:
+      echo fmt"{opcode:x}: Skip next instruction if key with the value of Vx is pressed."
+      # TODO: IMPLEMENT KEY PRESSES!
+    elif last2bits == 0xA1:
+      echo fmt"{opcode:x}: Skip next instruction if key with the value of Vx is NOT pressed."
+      # TODO: IMPLEMENT KEY PRESSES!
+  elif opcode shr 12 == 0x0F:
+    var
+      last2bits = (opcode and 0x00FF)
+      x = (opcode and 0x0F00) shr 8
+    if last2bits == 0x07:
+      echo fmt"{opcode:x}: Set V{x:x} = delay timer value"
+      registers[x] = delayTimer
+    elif last2bits == 0x0A:
+      echo fmt"{opcode:x}: Wait for key press, store value in V{x:x}"
+      # TODO: IMPLEMENT KEY PRESSES!
+      if key_pressed == -1:
+        pc -= 2
+      else:
+        registers[x] = key_pressed
+    elif last2bits == 0x15:
+      echo fmt"{opcode:x}: Set delay timer value = V{x:x}"
+      delayTimer = registers[x]
+    elif last2bits == 0x18:
+      echo fmt"{opcode:x}: Set sound timer value = V{x:x}"
+      soundTimer = registers[x]
+    elif last2bits == 0x1E:
+      echo fmt"{opcode:x}: Set I = I + V{x:x}"
+      index_register += registers[x]
+    elif last2bits == 0x29:
+      echo fmt"{opcode:x}: Set I = location of sprite for  digitV{x:x}"
+      index_register = 0 + (5 * registers[x]) # Sprites are 5 bits and start at address 0
+      
   else:
     echo fmt"opcode {opcode:x} not implemented"
     
@@ -171,9 +283,9 @@ proc printVideo() =
 
 proc main =
   loadFonts()
-  rom = readRomFile("/Users/ekish/Desktop/IBMLogo.ch8")
+  rom = readRomFile("/Users/ekish/Desktop/tetris.ch8")
   echo "---------------------"
-  
+  echo rom
   echo "---------------------"
   var ct = 0
   #while pc < len(memory):
@@ -194,11 +306,9 @@ proc main =
       # Main game loop
       while not windowShouldClose(): # Detect window close button or ESC key
         # Update and Draw
-        echo "CYCLE"
         cycle()
         # --------------------------------------------------------------------------------
         beginDrawing()
-        echo "DRAW"
         #printVideo()
         clearBackground(BLACK)
         var ix: int32 = 0
@@ -215,7 +325,7 @@ proc main =
         
         #drawPixel(16, 16)
         endDrawing()
-        sleep(200)
+        #sleep(200)
         # --------------------------------------------------------------------------------
     # De-Initialization
     # ------------------------------------------------------------------------------------
